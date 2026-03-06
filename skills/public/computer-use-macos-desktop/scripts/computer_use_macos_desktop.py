@@ -1,9 +1,20 @@
-"""Run the built-in Responses API computer loop against the full macOS desktop.
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#   "openai",
+#   "pillow>=12.1.1",
+#   "pyautogui>=0.9.54",
+#   "pyobjc-framework-Quartz",
+#   "python-dotenv",
+# ]
+# ///
 
-This harness captures the current desktop, sends it back as
-`computer_call_output`, and executes the returned computer actions locally with
-PyAutoGUI. It targets the current primary desktop coordinate space instead of a
-browser-only viewport.
+"""Run the Responses API computer loop against the full macOS desktop.
+
+This is the distributable version of Option 1 from the `computer-use` example.
+It captures the current desktop, sends it back as `computer_call_output`, and
+executes the returned computer actions locally with PyAutoGUI.
 """
 
 from __future__ import annotations
@@ -14,21 +25,25 @@ import ctypes
 import io
 import os
 import subprocess
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
 
 import pyautogui
 import Quartz
-import CoreFoundation
 from dotenv import load_dotenv
 from openai import OpenAI
 from PIL import Image
 
 DEFAULT_MODEL = "gpt-5.4"
 DEFAULT_WAIT_SECONDS = 2.0
-ACCESSIBILITY_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
-SCREEN_RECORDING_SETTINGS_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+ACCESSIBILITY_SETTINGS_URL = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+)
+SCREEN_RECORDING_SETTINGS_URL = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+)
 
 HARNESS_INSTRUCTIONS = """
 You are operating the user's full macOS desktop through the computer tool.
@@ -84,8 +99,12 @@ MOUSE_BUTTONS = {
     "wheel": "middle",
 }
 
-APP_SERVICES = ctypes.CDLL("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")
-CORE_FOUNDATION = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+APP_SERVICES = ctypes.CDLL(
+    "/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices"
+)
+CORE_FOUNDATION = ctypes.CDLL(
+    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"
+)
 
 APP_SERVICES.AXIsProcessTrusted.restype = ctypes.c_bool
 APP_SERVICES.AXIsProcessTrustedWithOptions.restype = ctypes.c_bool
@@ -98,7 +117,19 @@ CORE_FOUNDATION.CFDictionaryCreateMutable.argtypes = [
     ctypes.c_void_p,
 ]
 CORE_FOUNDATION.CFDictionaryAddValue.restype = None
-CORE_FOUNDATION.CFDictionaryAddValue.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+CORE_FOUNDATION.CFDictionaryAddValue.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+]
+CORE_FOUNDATION.CFStringCreateWithCString.restype = ctypes.c_void_p
+CORE_FOUNDATION.CFStringCreateWithCString.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_char_p,
+    ctypes.c_uint32,
+]
+
+K_CF_STRING_ENCODING_UTF8 = 0x08000100
 CF_BOOLEAN_TRUE = ctypes.c_void_p.in_dll(CORE_FOUNDATION, "kCFBooleanTrue")
 
 
@@ -117,13 +148,13 @@ def _is_accessibility_trusted() -> bool:
 
 
 def _request_accessibility_trust() -> bool:
-    key = CoreFoundation.CFStringCreateWithCString(
+    key = CORE_FOUNDATION.CFStringCreateWithCString(
         None,
         b"AXTrustedCheckOptionPrompt",
-        CoreFoundation.kCFStringEncodingUTF8,
+        K_CF_STRING_ENCODING_UTF8,
     )
     options = CORE_FOUNDATION.CFDictionaryCreateMutable(None, 1, None, None)
-    CORE_FOUNDATION.CFDictionaryAddValue(options, key.__c_void_p__(), CF_BOOLEAN_TRUE)
+    CORE_FOUNDATION.CFDictionaryAddValue(options, key, CF_BOOLEAN_TRUE)
     return bool(APP_SERVICES.AXIsProcessTrustedWithOptions(options))
 
 
@@ -161,7 +192,9 @@ def _get_field(obj: Any, name: str, default: Any = None) -> Any:
         return getattr(obj, name)
 
     if "_" in name:
-        camel_name = name.split("_")[0] + "".join(part.title() for part in name.split("_")[1:])
+        camel_name = name.split("_")[0] + "".join(
+            part.title() for part in name.split("_")[1:]
+        )
         if hasattr(obj, camel_name):
             return getattr(obj, camel_name)
     else:
@@ -268,7 +301,9 @@ def _actions_for_call(computer_call: Any) -> list[Any]:
     return [single_action] if single_action else []
 
 
-def _acknowledged_safety_checks(computer_call: Any, actions: list[Any]) -> list[dict[str, str]]:
+def _acknowledged_safety_checks(
+    computer_call: Any, actions: list[Any]
+) -> list[dict[str, str]]:
     checks = list(_get_field(computer_call, "pending_safety_checks", []) or [])
     if not checks:
         return []
@@ -375,7 +410,11 @@ def _run_action(action: Any, wait_seconds: float) -> None:
     raise NotImplementedError(f"Unsupported action type: {action_type}")
 
 
-def _computer_output_item(call_id: str, screenshot_base64: str, acknowledged_safety_checks: list[dict[str, str]]) -> dict[str, Any]:
+def _computer_output_item(
+    call_id: str,
+    screenshot_base64: str,
+    acknowledged_safety_checks: list[dict[str, str]],
+) -> dict[str, Any]:
     item: dict[str, Any] = {
         "type": "computer_call_output",
         "call_id": call_id,
@@ -389,7 +428,16 @@ def _computer_output_item(call_id: str, screenshot_base64: str, acknowledged_saf
     return item
 
 
-def main(prompt: str, max_steps: int, model: str, wait_seconds: float, skip_permission_check: bool) -> None:
+def main(
+    prompt: str,
+    max_steps: int,
+    model: str,
+    wait_seconds: float,
+    skip_permission_check: bool,
+) -> None:
+    if sys.platform != "darwin":
+        raise OSError("This skill runs only on macOS.")
+
     load_dotenv()
     if not skip_permission_check:
         _ensure_macos_permissions()

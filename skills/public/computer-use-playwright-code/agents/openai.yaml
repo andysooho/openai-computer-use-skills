@@ -1,0 +1,4 @@
+interface:
+  display_name: "Playwright Python Computer Use"
+  short_description: "Drive a persistent browser with async Python"
+  default_prompt: "Use $computer-use-playwright-code to automate this browser workflow with persistent Playwright state and summarize the result."

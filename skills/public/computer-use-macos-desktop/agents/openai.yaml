@@ -1,0 +1,4 @@
+interface:
+  display_name: "macOS Desktop Computer Use"
+  short_description: "Automate the full macOS desktop safely"
+  default_prompt: "Use $computer-use-macos-desktop to automate this task on the full macOS desktop and stop before any irreversible action."

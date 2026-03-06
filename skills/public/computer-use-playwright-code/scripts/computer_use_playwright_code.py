@@ -1,11 +1,18 @@
-"""Async Python analogue of cua_code_mode.ts.
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.13"
+# dependencies = [
+#   "openai",
+#   "playwright",
+#   "python-dotenv",
+# ]
+# ///
 
-Runs a Responses API loop with one persistent Playwright browser/context/page,
-and tools that let the model execute short async Python snippets and ask the
-user clarifying questions.
+"""Run a persistent Playwright + async Python Responses API loop.
 
-The model can return visual observations by calling:
-    display(base64_png_string)
+This is the distributable version of Option 3 from the `computer-use` example.
+The model can execute short async Python snippets against a persistent browser
+and can ask the user clarification questions mid-run.
 """
 
 from __future__ import annotations
@@ -17,11 +24,18 @@ import os
 import traceback
 from typing import Any
 
-from openai import OpenAI
-from playwright.async_api import async_playwright
 from dotenv import load_dotenv
+from openai import OpenAI
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import async_playwright
 
-Phase = str | None
+DEFAULT_MODEL = "gpt-5.4"
+DEFAULT_MAX_STEPS = 20
+DEFAULT_PROMPT = (
+    "Go to Hacker News, click on the most interesting link "
+    "(be prepared to justify your choice), take a screenshot, "
+    "and give me a critique of the visual layout."
+)
 
 
 def _message_text(item: Any) -> str:
@@ -29,10 +43,10 @@ def _message_text(item: Any) -> str:
         parts = getattr(item, "content", None)
         if isinstance(parts, list) and parts:
             out: list[str] = []
-            for p in parts:
-                t = getattr(p, "text", None)
-                if isinstance(t, str) and t:
-                    out.append(t)
+            for part in parts:
+                text = getattr(part, "text", None)
+                if isinstance(text, str) and text:
+                    out.append(text)
             if out:
                 return "\n".join(out)
     except Exception:
@@ -44,32 +58,33 @@ async def _ainput(prompt: str) -> str:
     return await asyncio.to_thread(input, prompt)
 
 
-async def main(
-    prompt: str = (
-        "Go to Hacker News, click on the most interesting link "
-        "(be prepared to justify your choice), take a screenshot, "
-        "and give me a critique of the visual layout."
-    ),
-    max_steps: int = 20,
-    model: str | None = None,
-) -> None:
+async def main(prompt: str, max_steps: int, model: str | None = None) -> None:
     load_dotenv()
-    resolved_model = model or os.getenv("OPENAI_MODEL") or "gpt-5.4"
+    resolved_model = model or os.getenv("OPENAI_MODEL") or DEFAULT_MODEL
     client = OpenAI()
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=False,
-            args=["--window-size=1440,900"],
-        )
+    async with async_playwright() as playwright:
+        try:
+            browser = await playwright.chromium.launch(
+                headless=False,
+                args=["--window-size=1440,900"],
+            )
+        except PlaywrightError as exc:
+            message = str(exc)
+            if "Executable doesn't exist" in message or "playwright install" in message:
+                raise RuntimeError(
+                    "Chromium is not installed. Run `uv run --with playwright python -m playwright install chromium` and try again."
+                ) from exc
+            raise
+
         context = await browser.new_context(viewport={"width": 1440, "height": 900})
         page = await context.new_page()
 
         conversation: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
         py_output: list[dict[str, Any]] = []
 
-        def log(*xs: Any) -> None:
-            text = " ".join(str(x) for x in xs)
+        def log(*items: Any) -> None:
+            text = " ".join(str(item) for item in items)
             py_output.append({"type": "input_text", "text": text[:5000]})
 
         def display(base64_image: str) -> None:
@@ -92,7 +107,7 @@ async def main(
         }
 
         for _ in range(max_steps):
-            resp = client.responses.create(
+            response = client.responses.create(
                 model=resolved_model,
                 tools=[
                     {
@@ -169,12 +184,12 @@ async def main(
                 input=conversation,
             )
 
-            conversation.extend(resp.output)
+            conversation.extend(response.output)
 
             had_tool_call = False
-            latest_phase: Phase = None
+            latest_phase: str | None = None
 
-            for item in resp.output:
+            for item in response.output:
                 item_type = getattr(item, "type", None)
 
                 if item_type == "function_call" and getattr(item, "name", None) == "exec_py":
@@ -254,17 +269,25 @@ async def main(
             if not had_tool_call and latest_phase == "final_answer":
                 return
 
+        raise RuntimeError(f"Reached max_steps={max_steps} before the model finished.")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--prompt", help="Override the default user prompt.")
+    parser.add_argument(
+        "--prompt",
+        default=DEFAULT_PROMPT,
+        help="Override the default user prompt.",
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=DEFAULT_MAX_STEPS,
+        help="Maximum model turns before aborting.",
+    )
     parser.add_argument(
         "--model",
-        help="Override the model. Defaults to OPENAI_MODEL or gpt-5.4.",
+        help=f"Override the model. Defaults to OPENAI_MODEL or {DEFAULT_MODEL}.",
     )
     args = parser.parse_args()
-    asyncio.run(
-        main(prompt=args.prompt, model=args.model)
-        if args.prompt is not None or args.model is not None
-        else main()
-    )
+    asyncio.run(main(prompt=args.prompt, max_steps=args.max_steps, model=args.model))
